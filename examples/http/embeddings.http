@@ -1,0 +1,275 @@
+# POST /v1/embeddings — the GAISe `GaiseEmbeddingsRequest` contract.
+#
+# Works with the VS Code REST Client extension and the JetBrains HTTP Client.
+# Start a server first, e.g.  HARRIER_MODELS=270m,0.6b target/release/harrier_api
+#
+# Response shape: { "output": [[f32; dims], ...], "usage": { "input": { "prompt_tokens": n }, "total": { "total_tokens": n } } }
+# Vectors come back in input order, unit-length unless `normalize: false`.
+# 270m → 640 dims, 0.6b → 1024 dims.
+
+@host = http://localhost:3000
+@model = harrier::harrier-oss-v1-0.6b
+
+### Minimal — one string, the service's default model (first of HARRIER_MODELS), default task `document`
+# @name minimal
+POST {{host}}/v1/embeddings
+Content-Type: application/json
+
+{
+  "input": "Definition of summit for English Language Learners: the highest point of a mountain."
+}
+
+### Model-card example, query side — `query` wraps each input as
+#   Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery: {text}
+# @name queries
+POST {{host}}/v1/embeddings
+Content-Type: application/json
+
+{
+  "model": "{{model}}",
+  "task": "query",
+  "input": ["how much protein should a female eat", "summit define"]
+}
+
+### Model-card example, document side — documents are embedded bare (no instruction).
+# Dot product of queries × documents reproduces the card's [[66.27, 28.46], [29.77, 69.94]] (×100) on the 0.6b.
+# @name documents
+POST {{host}}/v1/embeddings
+Content-Type: application/json
+
+{
+  "model": "{{model}}",
+  "task": "document",
+  "input": [
+    "As a general guideline, the CDC's average requirement of protein for women ages 19 to 70 is 46 grams per day. But, as you can see from this chart, you'll need to increase that if you're expecting or training for a marathon. Check out the chart below to see how much protein you should be eating each day.",
+    "Definition of summit for English Language Learners. : 1  the highest point of a mountain : the top of a mountain. : 2  the highest level. : 3  a meeting or series of meetings between the leaders of two or more governments."
+  ]
+}
+
+###############################################################################
+# Model names — all of these resolve to the same loaded model
+###############################################################################
+
+### Registry alias
+POST {{host}}/v1/embeddings
+Content-Type: application/json
+
+{
+  "model": "270m",
+  "input": "alias"
+}
+
+### Bare registry id
+POST {{host}}/v1/embeddings
+Content-Type: application/json
+
+{
+  "model": "harrier-oss-v1-270m",
+  "input": "bare id"
+}
+
+### Hugging Face repo
+POST {{host}}/v1/embeddings
+Content-Type: application/json
+
+{
+  "model": "microsoft/harrier-oss-v1-270m",
+  "input": "hub repo"
+}
+
+### Any `provider::` prefix is stripped, so a GAISe router can forward requests unchanged
+POST {{host}}/v1/embeddings
+Content-Type: application/json
+
+{
+  "model": "some-router::harrier-oss-v1-270m",
+  "input": "foreign provider prefix"
+}
+
+###############################################################################
+# Tasks — every canonical GAISe task, see README "Tasks → instructions"
+###############################################################################
+
+### similarity — symmetric: the instruction `Retrieve semantically similar text` goes on every input
+POST {{host}}/v1/embeddings
+Content-Type: application/json
+
+{
+  "model": "{{model}}",
+  "task": "similarity",
+  "input": ["The cat sat on the mat.", "A cat is sitting on a mat.", "Interest rates rose again today."]
+}
+
+### classification — `Classify the given text into one of the predefined categories`
+POST {{host}}/v1/embeddings
+Content-Type: application/json
+
+{
+  "model": "{{model}}",
+  "task": "classification",
+  "input": ["This product broke after two days, very disappointed.", "Absolutely love it, works perfectly."]
+}
+
+### clustering — `Identify the topic or theme of the given text`
+POST {{host}}/v1/embeddings
+Content-Type: application/json
+
+{
+  "model": "{{model}}",
+  "task": "clustering",
+  "input": ["Quarterly earnings beat expectations", "New vaccine trial shows promise", "Central bank holds rates steady"]
+}
+
+### code_query — `Given a code search query, retrieve relevant code snippets or documentation that answer the query`
+# Index the code itself with `task: document`.
+POST {{host}}/v1/embeddings
+Content-Type: application/json
+
+{
+  "model": "{{model}}",
+  "task": "code_query",
+  "input": "read a file to a string in rust"
+}
+
+### fact_verification — `Given a claim, retrieve documents that support or refute the claim`
+POST {{host}}/v1/embeddings
+Content-Type: application/json
+
+{
+  "model": "{{model}}",
+  "task": "fact_verification",
+  "input": "The Great Wall of China is visible from the Moon with the naked eye."
+}
+
+### question_answering — `Given a question, retrieve passages that answer the question`
+POST {{host}}/v1/embeddings
+Content-Type: application/json
+
+{
+  "model": "{{model}}",
+  "task": "question_answering",
+  "input": "What year did the Apollo 11 mission land on the Moon?"
+}
+
+### bitext_query — `Retrieve parallel sentences` (cross-lingual mining)
+POST {{host}}/v1/embeddings
+Content-Type: application/json
+
+{
+  "model": "{{model}}",
+  "task": "bitext_query",
+  "input": ["Where is the railway station?", "Où est la gare ?"]
+}
+
+### Task aliases are case-insensitive and `-` / space count as `_`
+POST {{host}}/v1/embeddings
+Content-Type: application/json
+
+{
+  "model": "{{model}}",
+  "task": "Search-Query",
+  "input": "aliases work too"
+}
+
+### Unknown task = custom instruction, used verbatim (the escape hatch)
+POST {{host}}/v1/embeddings
+Content-Type: application/json
+
+{
+  "model": "{{model}}",
+  "task": "Given a legal question, retrieve the relevant statute",
+  "input": "Can a landlord keep the deposit for normal wear and tear?"
+}
+
+### Explicit `instruction` (Harrier extension) — overrides `task`, applied to every input
+POST {{host}}/v1/embeddings
+Content-Type: application/json
+
+{
+  "model": "{{model}}",
+  "task": "query",
+  "instruction": "Given a product review, retrieve reviews that express the same opinion",
+  "input": ["Battery life is excellent", "Lasts all day on one charge"]
+}
+
+###############################################################################
+# Other fields
+###############################################################################
+
+### normalize: false — raw pooled hidden state instead of the unit-length vector
+POST {{host}}/v1/embeddings
+Content-Type: application/json
+
+{
+  "model": "{{model}}",
+  "input": "raw, not L2-normalised",
+  "normalize": false
+}
+
+### dimensions — accepted for contract compatibility and ignored (Harrier vectors are fixed-size)
+POST {{host}}/v1/embeddings
+Content-Type: application/json
+
+{
+  "model": "{{model}}",
+  "input": "still comes back at the model's native size",
+  "dimensions": 256
+}
+
+### correlation_id — accepted, not used; a router's tracing key travels through untouched
+POST {{host}}/v1/embeddings
+Content-Type: application/json
+
+{
+  "model": "{{model}}",
+  "correlation_id": "req-7f3a2c",
+  "task": "query",
+  "input": "tracing passthrough"
+}
+
+### Mixed lengths in one request — batched by length internally, short rows are never padded to the long one
+POST {{host}}/v1/embeddings
+Content-Type: application/json
+
+{
+  "model": "{{model}}",
+  "input": [
+    "short",
+    "",
+    "A medium-length sentence that has a few more tokens than the one before it.",
+    "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum."
+  ]
+}
+
+###############################################################################
+# Errors — plain-text bodies, like gaise-api
+###############################################################################
+
+### 400 — empty input
+POST {{host}}/v1/embeddings
+Content-Type: application/json
+
+{
+  "model": "{{model}}",
+  "input": []
+}
+
+### 400 — malformed JSON
+POST {{host}}/v1/embeddings
+Content-Type: application/json
+
+{ "input": "missing closing brace"
+
+### 404 — model that is not loaded (the body lists what is)
+POST {{host}}/v1/embeddings
+Content-Type: application/json
+
+{
+  "model": "harrier::harrier-oss-v1-27b",
+  "input": "not loaded"
+}
+
+### 415 — missing Content-Type: application/json
+POST {{host}}/v1/embeddings
+
+{ "input": "no content type" }

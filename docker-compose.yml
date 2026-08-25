@@ -1,0 +1,112 @@
+# harrier_embeddings — Docker Compose
+#
+#   docker compose up -d                       # 8-bit GGUF on the GPU, self-contained, port 13265
+#   docker compose --profile cuda up -d        # bf16 safetensors on the GPU, port 3000, weights from the volume
+#   docker compose --profile cpu up -d         # CPU image, port 3000, weights from the volume
+#
+#   # fill the shared weights volume once (any model names the CLI accepts)
+#   docker compose run --rm download 0.6b 0.6b:q8_0 270m
+#
+# GPU services need the NVIDIA Container Toolkit (Docker Desktop on Windows
+# ships it). The `deploy.resources.reservations.devices` block is what attaches
+# the GPU; without it the CUDA binaries fail at start with
+# "libcuda.so.1: cannot open shared object file" (see docker/Dockerfile.cuda*).
+#
+# Overrides via environment / .env: CUDA_COMPUTE_CAP (89 = RTX 40xx, 86 = RTX 30xx,
+# 80 = A100, 90 = H100), HARRIER_GGUF_MODELS (baked into the GGUF image),
+# HARRIER_GGUF_PORT (host port of the default service, 13265), HARRIER_PORT (host
+# port of the cuda / cpu services, 3000), and the HARRIER_* server variables
+# listed in the README (Configuration).
+
+services:
+  # --- default: 8-bit GGUF, CUDA, weights baked into the image ---------------
+  harrier:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.cuda.gguf
+      target: bake
+      args:
+        CUDA_COMPUTE_CAP: ${CUDA_COMPUTE_CAP:-89}
+        HARRIER_MODELS: ${HARRIER_GGUF_MODELS:-0.6b:q8_0}
+    image: harrier-api:cuda-gguf-models
+    ports:
+      - "${HARRIER_GGUF_PORT:-13265}:13265"
+    environment:
+      HARRIER_MAX_BATCH_SIZE: ${HARRIER_MAX_BATCH_SIZE:-32}
+      HARRIER_MAX_BATCH_TOKENS: ${HARRIER_MAX_BATCH_TOKENS:-16384}
+      HARRIER_LOG_REQUESTS: ${HARRIER_LOG_REQUESTS:-true}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  # --- bf16 safetensors on CUDA, weights from the shared volume --------------
+  harrier-cuda:
+    profiles: [cuda]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.cuda
+      args:
+        CUDA_COMPUTE_CAP: ${CUDA_COMPUTE_CAP:-89}
+    image: harrier-api:cuda
+    ports:
+      - "${HARRIER_PORT:-3000}:3000"
+    environment:
+      HARRIER_MODELS: ${HARRIER_MODELS:-0.6b}
+      HARRIER_MAX_BATCH_SIZE: ${HARRIER_MAX_BATCH_SIZE:-32}
+      HARRIER_MAX_BATCH_TOKENS: ${HARRIER_MAX_BATCH_TOKENS:-16384}
+      HARRIER_LOG_REQUESTS: ${HARRIER_LOG_REQUESTS:-true}
+    volumes:
+      - harrier-models:/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  # --- CPU, weights from the shared volume ----------------------------------
+  harrier-cpu:
+    profiles: [cpu]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.cpu
+    image: harrier-api:cpu
+    ports:
+      - "${HARRIER_PORT:-3000}:3000"
+    environment:
+      HARRIER_MODELS: ${HARRIER_MODELS:-0.6b}
+      HARRIER_MAX_BATCH_SIZE: ${HARRIER_MAX_BATCH_SIZE:-32}
+      HARRIER_MAX_BATCH_TOKENS: ${HARRIER_MAX_BATCH_TOKENS:-16384}
+      HARRIER_LOG_REQUESTS: ${HARRIER_LOG_REQUESTS:-true}
+    volumes:
+      - harrier-models:/models
+    restart: unless-stopped
+
+  # --- one-shot: fetch weights into the shared volume -----------------------
+  # docker compose run --rm download 0.6b 0.6b:q8_0 270m
+  download:
+    profiles: [download]
+    image: harrier-api:cpu
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.cpu
+    entrypoint: ["/harrier_api", "download"]
+    command: ["0.6b"]
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - harrier-models:/models
+
+# A named volume rather than a bind mount of ./models: on Docker Desktop for
+# Windows a bind mount goes through a slow 9p bridge (~20 s model loads instead
+# of ~2 s). Replace it with a bind mount (`./models:/models`) if you prefer the
+# host folder — the `download` CLI fills either the same way.
+volumes:
+  harrier-models:

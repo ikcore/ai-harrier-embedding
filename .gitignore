@@ -1,0 +1,7 @@
+/target
+**/*.rs.bk
+*.pdb
+.env
+# model weights live here (harrier_api download ...); keep the folder, not the files
+/models/*
+!/models/.gitkeep

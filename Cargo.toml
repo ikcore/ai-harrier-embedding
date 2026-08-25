@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = ["crates/harrier_core", "crates/harrier_api"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/ikcore/harrier_embeddings"
+keywords = ["embeddings", "harrier", "candle", "llm", "rag"]
+categories = ["science", "web-programming"]
+
+[workspace.dependencies]
+harrier_core = { path = "crates/harrier_core", version = "0.1.0" }
+
+# Inference
+candle-core = "0.11"
+candle-nn = "0.11"
+tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
+hf-hub = { version = "0.4", default-features = false, features = ["ureq"] }
+# Both already come in through candle; listed here for the CPU Q8_0 kernel.
+half = "2"
+rayon = "1"
+
+# Serving
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "net", "signal"] }
+
+# Shared
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

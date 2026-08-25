@@ -1,0 +1,14 @@
+# Liveness / readiness for harrier_api.
+#
+# Works with the VS Code REST Client extension and the JetBrains HTTP Client
+# (both read the `@name = value` file variables and `###` separators below).
+# Start a server first, e.g.  HARRIER_MODELS=270m,0.6b target/release/harrier_api
+
+@host = http://localhost:3000
+
+### Health — status, version, uptime, loaded models, compiled backends
+# @name health
+GET {{host}}/health
+
+### The root path serves the same payload
+GET {{host}}/

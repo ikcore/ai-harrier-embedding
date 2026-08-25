@@ -1,0 +1,86 @@
+# syntax=docker/dockerfile:1
+# CUDA image serving the 8-bit GGUF weights (harrier-oss-v1-0.6b q8_0 by
+# default): the same glibc binary + CUDA libraries as Dockerfile.cuda, with the
+# int8 weights (0.64 GB instead of 1.2 GB bf16) and candle's MMQ int8
+# tensor-core kernels. Same speed as bf16 on an RTX 4080, half the VRAM.
+#
+#   # binary only; weights from the /models volume (fetched from the Hub on first start if missing)
+#   docker build -f docker/Dockerfile.cuda.gguf -t harrier-api:cuda-gguf .
+#   docker run --rm --gpus all -p 13265:13265 -v ./models:/models harrier-api:cuda-gguf
+#
+#   # self-contained: the GGUF + tokenizer + config are downloaded at build time and baked in
+#   docker build -f docker/Dockerfile.cuda.gguf --target bake -t harrier-api:cuda-gguf-models .
+#   docker run --rm --gpus all -p 13265:13265 harrier-api:cuda-gguf-models
+#
+# `--gpus all` (or `gpus: all` in compose) is required: libcuda.so.1 is the
+# host driver, mounted in by the NVIDIA container runtime only when a GPU is
+# attached. Without it the binary cannot even start:
+#   /harrier_api: error while loading shared libraries: libcuda.so.1: cannot open shared object file
+# Docker Desktop's "Run" button does not attach GPUs — use the command line or compose.
+#
+# Build args:
+#   CUDA_VERSION      toolkit used to build (default 12.6.3; host driver must support it)
+#   CUDA_COMPUTE_CAP  target GPU (80 = A100, 86 = RTX 30xx, 89 = RTX 40xx, 90 = H100)
+#   HARRIER_MODELS    which models the image serves / bakes, comma-separated
+#                     (default "0.6b:q8_0"; e.g. "0.6b:q8_0,270m:q8_0")
+#
+#   The bake download takes an optional Hugging Face token as a build secret
+#   (the default repos are public): --secret id=hf_token,env=HF_TOKEN
+
+ARG CUDA_VERSION=12.6.3
+FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu22.04 AS build
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates build-essential \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+ENV PATH=/root/.cargo/bin:$PATH
+ARG CUDA_COMPUTE_CAP=89
+ENV CUDA_COMPUTE_CAP=${CUDA_COMPUTE_CAP}
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo build --release --features cuda -p harrier_api \
+    && cp target/release/harrier_api /harrier_api
+# Collect exactly the CUDA shared objects the binary needs (+ nvrtc's builtins,
+# which nvrtc dlopens at run time).
+RUN mkdir -p /cuda-libs \
+    && ldd /harrier_api | grep -oE '/usr/local/cuda[^ ]+' | xargs -I{} cp -L {} /cuda-libs/ \
+    && cp -L /usr/local/cuda/lib64/libnvrtc-builtins.so.* /cuda-libs/ \
+    && ls -la /cuda-libs
+
+# Download the GGUF quantisation(s) with the binary itself so the bake stage
+# holds plain files (no Hub cache layout). The Hub cache is a build cache, so
+# rebuilding the image does not re-download 0.64 GB.
+FROM build AS fetch
+ARG HARRIER_MODELS="0.6b:q8_0"
+# The binary links libcuda.so.1 (the driver), which only exists on a host with
+# a GPU; `download` never calls into CUDA, so the toolkit's stub satisfies the
+# loader here.
+RUN mkdir -p /stubs && ln -s /usr/local/cuda/lib64/stubs/libcuda.so /stubs/libcuda.so.1
+RUN --mount=type=cache,target=/hf-cache \
+    --mount=type=secret,id=hf_token \
+    HF_TOKEN="$(cat /run/secrets/hf_token 2>/dev/null || true)" \
+    LD_LIBRARY_PATH=/stubs HF_HOME=/hf-cache HARRIER_MODEL_DIR=/models-baked \
+    /harrier_api download "${HARRIER_MODELS}" \
+    && du -sh /models-baked/*
+
+FROM gcr.io/distroless/cc-debian12 AS base
+COPY --from=build /cuda-libs/ /usr/local/cuda/lib64/
+COPY --from=build /harrier_api /harrier_api
+ARG HARRIER_MODELS="0.6b:q8_0"
+ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64 \
+    NVIDIA_VISIBLE_DEVICES=all NVIDIA_DRIVER_CAPABILITIES=compute,utility \
+    HARRIER_MODEL_DIR=/models HARRIER_DEVICE=cuda \
+    HARRIER_HOST=0.0.0.0 HARRIER_PORT=13265 HF_HOME=/models/.hf-cache
+ENV HARRIER_MODELS=${HARRIER_MODELS}
+VOLUME ["/models"]
+EXPOSE 13265
+ENTRYPOINT ["/harrier_api"]
+
+# Self-contained: the GGUF(s) downloaded above, no volume, no network.
+FROM base AS bake
+COPY --from=fetch /models-baked/ /models/
+
+# Default (last stage): binary only, models from the /models volume.
+FROM base AS runtime

@@ -1,0 +1,1924 @@
+{
+  "info": {
+    "_postman_id": "cbfe2100-4c24-5cb7-9e73-85b50cb8b8a5",
+    "name": "harrier_api",
+    "description": "Microsoft Harrier OSS v1 embeddings served by harrier_api — every endpoint, task, model-name form and error case. Mirrors examples/http/*.http.\n\nStart a server first, e.g. `HARRIER_MODELS=270m,0.6b target/release/harrier_api` (port 3000) or `docker compose up -d` (8-bit GGUF on port 13265), pick the matching environment, then run the collection top to bottom: **Health → Models** records the default model's dimensions, **Embeddings** checks vector count, size and normalisation on every request, and the model-card example verifies the published scores.\n\nThe `Model names` folder and the by-id/alias model requests assume the 270m is loaded too.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Health",
+      "description": "Liveness / readiness for harrier_api.",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{host}}/health",
+              "host": [
+                "{{host}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "description": "Liveness / readiness: status, version, uptime, loaded models, compiled backends. Also records the default model and its dimensions for the other requests' tests."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "const h = pm.response.json();",
+                  "pm.test(\"status ok\", () => pm.expect(h.status).to.eql(\"ok\"));",
+                  "pm.test(\"at least one model loaded\", () => pm.expect(h.models.length).to.be.above(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Root serves the same payload",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{host}}/",
+              "host": [
+                "{{host}}"
+              ],
+              "path": []
+            },
+            "description": "`GET /` returns the health document too."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"same shape as /health\", () => pm.expect(pm.response.json().service).to.eql(\"harrier_api\"));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Models",
+      "description": "GET /v1/models — GAISe-shaped model records.",
+      "item": [
+        {
+          "name": "All loaded models",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{host}}/v1/models",
+              "host": [
+                "{{host}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ]
+            },
+            "description": "GAISe-shaped model records: id, provider (`harrier`), display_name, status, capabilities, limits, plus an `embedding` profile (dimension_rule: fixed, task_control, resolved task_instructions) and `runtime` facts (architecture, source, device, dtype, quantization, dequantized, load_seconds, default). The test stores the `{{model}}` record's dimensions as `dims` for the embeddings tests."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "const ms = pm.response.json().models;",
+                  "pm.test(\"at least one record\", () => pm.expect(ms.length).to.be.above(0));",
+                  "pm.test(\"records carry a runtime block\", () => pm.expect(ms[0].runtime).to.have.property(\"device\"));",
+                  "const want = pm.collectionVariables.get(\"model\").replace(/^.*::/, \"\");",
+                  "const m = ms.find(x => x.id.replace(/^.*::/, \"\") === want) || ms[0];",
+                  "pm.collectionVariables.set(\"dims\", m.limits.embedding_dimensions);",
+                  "for (const x of ms) {",
+                  "  pm.collectionVariables.set(\"dims_\" + x.id.replace(/^.*::/, \"\"), x.limits.embedding_dimensions);",
+                  "  if (x.runtime.default) pm.collectionVariables.set(\"dims_default\", x.limits.embedding_dimensions);",
+                  "}",
+                  "console.log(\"model\", m.id, \"runs on\", m.runtime.device, m.runtime.quantization || m.runtime.dtype, \"→\", m.limits.embedding_dimensions, \"dims\");"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Filter by operation=embeddings",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{host}}/v1/models?operation=embeddings",
+              "host": [
+                "{{host}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "operation",
+                  "value": "embeddings"
+                }
+              ]
+            },
+            "description": "`embeddings` (also `embedding`, `embed`) returns everything."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"not empty\", () => pm.expect(pm.response.json().models.length).to.be.above(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Filter by operation=instruct (empty)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{host}}/v1/models?operation=instruct",
+              "host": [
+                "{{host}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "operation",
+                  "value": "instruct"
+                }
+              ]
+            },
+            "description": "Other GAISe operations are valid but this service offers none → empty list."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"empty list\", () => pm.expect(pm.response.json().models).to.have.length(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Filter by provider=harrier",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{host}}/v1/models?provider=harrier",
+              "host": [
+                "{{host}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "harrier"
+                }
+              ]
+            },
+            "description": "`harrier` returns everything."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"not empty\", () => pm.expect(pm.response.json().models.length).to.be.above(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Filter by provider=openai (empty)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{host}}/v1/models?provider=openai",
+              "host": [
+                "{{host}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            },
+            "description": "Any other provider → empty list."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"empty list\", () => pm.expect(pm.response.json().models).to.have.length(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Both filters, as a GAISe router sends them",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{host}}/v1/models?operation=embeddings&provider=harrier",
+              "host": [
+                "{{host}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "operation",
+                  "value": "embeddings"
+                },
+                {
+                  "key": "provider",
+                  "value": "harrier"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"not empty\", () => pm.expect(pm.response.json().models.length).to.be.above(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "One model by GAISe-qualified id",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{host}}/v1/models/{{model}}",
+              "host": [
+                "{{host}}"
+              ],
+              "path": [
+                "v1",
+                "models",
+                "{{model}}"
+              ]
+            },
+            "description": "`harrier::harrier-oss-v1-0.6b`."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"single record\", () => pm.expect(pm.response.json()).to.have.property(\"embedding\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "One model by bare id",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{host}}/v1/models/harrier-oss-v1-270m",
+              "host": [
+                "{{host}}"
+              ],
+              "path": [
+                "v1",
+                "models",
+                "harrier-oss-v1-270m"
+              ]
+            },
+            "description": "Needs the 270m loaded (`HARRIER_MODELS=270m,0.6b`)."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"single record\", () => pm.expect(pm.response.json().id).to.eql(\"harrier::harrier-oss-v1-270m\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "One model by alias",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{host}}/v1/models/270m",
+              "host": [
+                "{{host}}"
+              ],
+              "path": [
+                "v1",
+                "models",
+                "270m"
+              ]
+            },
+            "description": "Needs the 270m loaded."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"single record\", () => pm.expect(pm.response.json().id).to.eql(\"harrier::harrier-oss-v1-270m\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Errors",
+          "description": "Plain-text bodies, like gaise-api.",
+          "item": [
+            {
+              "name": "400 — unknown operation",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{host}}/v1/models?operation=bogus",
+                  "host": [
+                    "{{host}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "models"
+                  ],
+                  "query": [
+                    {
+                      "key": "operation",
+                      "value": "bogus"
+                    }
+                  ]
+                },
+                "description": "Plain-text body, like gaise-api."
+              },
+              "response": [],
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"status 400\", () => pm.response.to.have.status(400));"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "404 — model that is not loaded",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{host}}/v1/models/harrier::harrier-oss-v1-27b",
+                  "host": [
+                    "{{host}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "models",
+                    "harrier::harrier-oss-v1-27b"
+                  ]
+                },
+                "description": ""
+              },
+              "response": [],
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"status 404\", () => pm.response.to.have.status(404));"
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Embeddings",
+      "description": "POST /v1/embeddings — the GAISe `GaiseEmbeddingsRequest` contract. Response: `{ output: [[f32; dims], …], usage: { input: { prompt_tokens }, total: { total_tokens } } }`. Vectors come back in input order, unit-length unless `normalize: false`. 270m → 640 dims, 0.6b → 1024 dims.",
+      "item": [
+        {
+          "name": "Model-card example",
+          "description": "The example from the Harrier model card, query side and document side.",
+          "item": [
+            {
+              "name": "Minimal — one string, default model, default task",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{host}}/v1/embeddings",
+                  "host": [
+                    "{{host}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                },
+                "description": "No `model` → the service's default (first of HARRIER_MODELS); no `task` → `document`.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"input\": \"Definition of summit for English Language Learners: the highest point of a mountain.\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "response": [],
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                      "const r = pm.response.json();",
+                      "pm.test(\"1 vector(s) in input order\", () => pm.expect(r.output).to.have.length(1));",
+                      "pm.test(\"vectors have the model's size\", () => {",
+                      "  const dims = Number(pm.collectionVariables.get(\"dims_default\") || 0);",
+                      "  if (dims) pm.expect(r.output[0]).to.have.length(dims);",
+                      "});",
+                      "pm.test(\"usage carries the token count\", () => pm.expect(r.usage.total.total_tokens).to.be.a(\"number\"));",
+                      "pm.test(\"vectors are unit length\", () => {",
+                      "  for (const v of pm.response.json().output) {",
+                      "    const n = Math.sqrt(v.reduce((a, x) => a + x * x, 0));",
+                      "    pm.expect(Math.abs(n - 1)).to.be.below(1e-3);",
+                      "  }",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Queries — task: query",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{host}}/v1/embeddings",
+                  "host": [
+                    "{{host}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                },
+                "description": "`query` wraps each input as `Instruct: Given a web search query, retrieve relevant passages that answer the query\\nQuery: {text}`. The test keeps the vectors for the documents request.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"{{model}}\",\n  \"task\": \"query\",\n  \"input\": [\n    \"how much protein should a female eat\",\n    \"summit define\"\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "response": [],
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                      "const r = pm.response.json();",
+                      "pm.test(\"2 vector(s) in input order\", () => pm.expect(r.output).to.have.length(2));",
+                      "pm.test(\"vectors have the model's size\", () => {",
+                      "  const dims = Number(pm.collectionVariables.get(\"dims\") || 0);",
+                      "  if (dims) pm.expect(r.output[0]).to.have.length(dims);",
+                      "});",
+                      "pm.test(\"usage carries the token count\", () => pm.expect(r.usage.total.total_tokens).to.be.a(\"number\"));",
+                      "pm.test(\"vectors are unit length\", () => {",
+                      "  for (const v of pm.response.json().output) {",
+                      "    const n = Math.sqrt(v.reduce((a, x) => a + x * x, 0));",
+                      "    pm.expect(Math.abs(n - 1)).to.be.below(1e-3);",
+                      "  }",
+                      "});",
+                      "pm.collectionVariables.set(\"query_vectors\", JSON.stringify(pm.response.json().output));"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Documents — task: document",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{host}}/v1/embeddings",
+                  "host": [
+                    "{{host}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                },
+                "description": "Documents are embedded bare (no instruction). Dot product of queries × documents reproduces the model card's `[[66.27, 28.46], [29.77, 69.94]]` (×100) on the 0.6b; the test checks it within ±1.5 (bf16 / int8 drift) when `{{model}}` is the 0.6b.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"{{model}}\",\n  \"task\": \"document\",\n  \"input\": [\n    \"As a general guideline, the CDC's average requirement of protein for women ages 19 to 70 is 46 grams per day. But, as you can see from this chart, you'll need to increase that if you're expecting or training for a marathon. Check out the chart below to see how much protein you should be eating each day.\",\n    \"Definition of summit for English Language Learners. : 1  the highest point of a mountain : the top of a mountain. : 2  the highest level. : 3  a meeting or series of meetings between the leaders of two or more governments.\"\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "response": [],
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                      "const r = pm.response.json();",
+                      "pm.test(\"2 vector(s) in input order\", () => pm.expect(r.output).to.have.length(2));",
+                      "pm.test(\"vectors have the model's size\", () => {",
+                      "  const dims = Number(pm.collectionVariables.get(\"dims\") || 0);",
+                      "  if (dims) pm.expect(r.output[0]).to.have.length(dims);",
+                      "});",
+                      "pm.test(\"usage carries the token count\", () => pm.expect(r.usage.total.total_tokens).to.be.a(\"number\"));",
+                      "pm.test(\"vectors are unit length\", () => {",
+                      "  for (const v of pm.response.json().output) {",
+                      "    const n = Math.sqrt(v.reduce((a, x) => a + x * x, 0));",
+                      "    pm.expect(Math.abs(n - 1)).to.be.below(1e-3);",
+                      "  }",
+                      "});",
+                      "const q = JSON.parse(pm.collectionVariables.get(\"query_vectors\") || \"null\");",
+                      "const d = pm.response.json().output;",
+                      "if (q && /0\\.6b$/.test(pm.collectionVariables.get(\"model\"))) {",
+                      "  const dot = (a, b) => a.reduce((s, x, i) => s + x * b[i], 0) * 100;",
+                      "  const scores = q.map(qv => d.map(dv => dot(qv, dv)));",
+                      "  console.log(\"scores\", JSON.stringify(scores.map(r => r.map(x => +x.toFixed(2)))));",
+                      "  const want = [[66.27, 28.46], [29.77, 69.94]];",
+                      "  pm.test(\"model-card scores reproduce (±1.5)\", () => {",
+                      "    for (let i = 0; i < 2; i++) for (let j = 0; j < 2; j++) pm.expect(Math.abs(scores[i][j] - want[i][j])).to.be.below(1.5);",
+                      "  });",
+                      "}"
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "Model names",
+          "description": "All of these resolve to the same loaded model — the 270m, so run the server with HARRIER_MODELS=270m,0.6b. Their vector-size test uses the 270m's dimensions recorded by the Models request.",
+          "item": [
+            {
+              "name": "Registry alias",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{host}}/v1/embeddings",
+                  "host": [
+                    "{{host}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                },
+                "description": "Needs the 270m loaded.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"270m\",\n  \"input\": \"alias\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "response": [],
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                      "const r = pm.response.json();",
+                      "pm.test(\"1 vector(s) in input order\", () => pm.expect(r.output).to.have.length(1));",
+                      "pm.test(\"vectors have the model's size\", () => {",
+                      "  const dims = Number(pm.collectionVariables.get(\"dims_harrier-oss-v1-270m\") || 0);",
+                      "  if (dims) pm.expect(r.output[0]).to.have.length(dims);",
+                      "});",
+                      "pm.test(\"usage carries the token count\", () => pm.expect(r.usage.total.total_tokens).to.be.a(\"number\"));",
+                      "pm.test(\"vectors are unit length\", () => {",
+                      "  for (const v of pm.response.json().output) {",
+                      "    const n = Math.sqrt(v.reduce((a, x) => a + x * x, 0));",
+                      "    pm.expect(Math.abs(n - 1)).to.be.below(1e-3);",
+                      "  }",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Bare registry id",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{host}}/v1/embeddings",
+                  "host": [
+                    "{{host}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                },
+                "description": "",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"harrier-oss-v1-270m\",\n  \"input\": \"bare id\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "response": [],
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                      "const r = pm.response.json();",
+                      "pm.test(\"1 vector(s) in input order\", () => pm.expect(r.output).to.have.length(1));",
+                      "pm.test(\"vectors have the model's size\", () => {",
+                      "  const dims = Number(pm.collectionVariables.get(\"dims_harrier-oss-v1-270m\") || 0);",
+                      "  if (dims) pm.expect(r.output[0]).to.have.length(dims);",
+                      "});",
+                      "pm.test(\"usage carries the token count\", () => pm.expect(r.usage.total.total_tokens).to.be.a(\"number\"));",
+                      "pm.test(\"vectors are unit length\", () => {",
+                      "  for (const v of pm.response.json().output) {",
+                      "    const n = Math.sqrt(v.reduce((a, x) => a + x * x, 0));",
+                      "    pm.expect(Math.abs(n - 1)).to.be.below(1e-3);",
+                      "  }",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Hugging Face repo",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{host}}/v1/embeddings",
+                  "host": [
+                    "{{host}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                },
+                "description": "",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"microsoft/harrier-oss-v1-270m\",\n  \"input\": \"hub repo\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "response": [],
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                      "const r = pm.response.json();",
+                      "pm.test(\"1 vector(s) in input order\", () => pm.expect(r.output).to.have.length(1));",
+                      "pm.test(\"vectors have the model's size\", () => {",
+                      "  const dims = Number(pm.collectionVariables.get(\"dims_harrier-oss-v1-270m\") || 0);",
+                      "  if (dims) pm.expect(r.output[0]).to.have.length(dims);",
+                      "});",
+                      "pm.test(\"usage carries the token count\", () => pm.expect(r.usage.total.total_tokens).to.be.a(\"number\"));",
+                      "pm.test(\"vectors are unit length\", () => {",
+                      "  for (const v of pm.response.json().output) {",
+                      "    const n = Math.sqrt(v.reduce((a, x) => a + x * x, 0));",
+                      "    pm.expect(Math.abs(n - 1)).to.be.below(1e-3);",
+                      "  }",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Foreign provider:: prefix is stripped",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{host}}/v1/embeddings",
+                  "host": [
+                    "{{host}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                },
+                "description": "Any `provider::` prefix is stripped, so a GAISe router can forward requests unchanged.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"some-router::harrier-oss-v1-270m\",\n  \"input\": \"foreign provider prefix\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "response": [],
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                      "const r = pm.response.json();",
+                      "pm.test(\"1 vector(s) in input order\", () => pm.expect(r.output).to.have.length(1));",
+                      "pm.test(\"vectors have the model's size\", () => {",
+                      "  const dims = Number(pm.collectionVariables.get(\"dims_harrier-oss-v1-270m\") || 0);",
+                      "  if (dims) pm.expect(r.output[0]).to.have.length(dims);",
+                      "});",
+                      "pm.test(\"usage carries the token count\", () => pm.expect(r.usage.total.total_tokens).to.be.a(\"number\"));",
+                      "pm.test(\"vectors are unit length\", () => {",
+                      "  for (const v of pm.response.json().output) {",
+                      "    const n = Math.sqrt(v.reduce((a, x) => a + x * x, 0));",
+                      "    pm.expect(Math.abs(n - 1)).to.be.below(1e-3);",
+                      "  }",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "Tasks",
+          "description": "Every canonical GAISe task; see README “Tasks → instructions”.",
+          "item": [
+            {
+              "name": "similarity",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{host}}/v1/embeddings",
+                  "host": [
+                    "{{host}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                },
+                "description": "Symmetric: the instruction `Retrieve semantically similar text` goes on every input.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"{{model}}\",\n  \"task\": \"similarity\",\n  \"input\": [\n    \"The cat sat on the mat.\",\n    \"A cat is sitting on a mat.\",\n    \"Interest rates rose again today.\"\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "response": [],
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                      "const r = pm.response.json();",
+                      "pm.test(\"3 vector(s) in input order\", () => pm.expect(r.output).to.have.length(3));",
+                      "pm.test(\"vectors have the model's size\", () => {",
+                      "  const dims = Number(pm.collectionVariables.get(\"dims\") || 0);",
+                      "  if (dims) pm.expect(r.output[0]).to.have.length(dims);",
+                      "});",
+                      "pm.test(\"usage carries the token count\", () => pm.expect(r.usage.total.total_tokens).to.be.a(\"number\"));",
+                      "pm.test(\"vectors are unit length\", () => {",
+                      "  for (const v of pm.response.json().output) {",
+                      "    const n = Math.sqrt(v.reduce((a, x) => a + x * x, 0));",
+                      "    pm.expect(Math.abs(n - 1)).to.be.below(1e-3);",
+                      "  }",
+                      "});",
+                      "const [a, b, c] = pm.response.json().output;",
+                      "const dot = (x, y) => x.reduce((s, v, i) => s + v * y[i], 0);",
+                      "pm.test(\"paraphrases score higher than the unrelated sentence\", () => pm.expect(dot(a, b)).to.be.above(dot(a, c)));"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "classification",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{host}}/v1/embeddings",
+                  "host": [
+                    "{{host}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                },
+                "description": "`Classify the given text into one of the predefined categories`",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"{{model}}\",\n  \"task\": \"classification\",\n  \"input\": [\n    \"This product broke after two days, very disappointed.\",\n    \"Absolutely love it, works perfectly.\"\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "response": [],
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                      "const r = pm.response.json();",
+                      "pm.test(\"2 vector(s) in input order\", () => pm.expect(r.output).to.have.length(2));",
+                      "pm.test(\"vectors have the model's size\", () => {",
+                      "  const dims = Number(pm.collectionVariables.get(\"dims\") || 0);",
+                      "  if (dims) pm.expect(r.output[0]).to.have.length(dims);",
+                      "});",
+                      "pm.test(\"usage carries the token count\", () => pm.expect(r.usage.total.total_tokens).to.be.a(\"number\"));",
+                      "pm.test(\"vectors are unit length\", () => {",
+                      "  for (const v of pm.response.json().output) {",
+                      "    const n = Math.sqrt(v.reduce((a, x) => a + x * x, 0));",
+                      "    pm.expect(Math.abs(n - 1)).to.be.below(1e-3);",
+                      "  }",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "clustering",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{host}}/v1/embeddings",
+                  "host": [
+                    "{{host}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                },
+                "description": "`Identify the topic or theme of the given text`",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"{{model}}\",\n  \"task\": \"clustering\",\n  \"input\": [\n    \"Quarterly earnings beat expectations\",\n    \"New vaccine trial shows promise\",\n    \"Central bank holds rates steady\"\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "response": [],
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                      "const r = pm.response.json();",
+                      "pm.test(\"3 vector(s) in input order\", () => pm.expect(r.output).to.have.length(3));",
+                      "pm.test(\"vectors have the model's size\", () => {",
+                      "  const dims = Number(pm.collectionVariables.get(\"dims\") || 0);",
+                      "  if (dims) pm.expect(r.output[0]).to.have.length(dims);",
+                      "});",
+                      "pm.test(\"usage carries the token count\", () => pm.expect(r.usage.total.total_tokens).to.be.a(\"number\"));",
+                      "pm.test(\"vectors are unit length\", () => {",
+                      "  for (const v of pm.response.json().output) {",
+                      "    const n = Math.sqrt(v.reduce((a, x) => a + x * x, 0));",
+                      "    pm.expect(Math.abs(n - 1)).to.be.below(1e-3);",
+                      "  }",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "code_query",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{host}}/v1/embeddings",
+                  "host": [
+                    "{{host}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                },
+                "description": "`Given a code search query, retrieve relevant code snippets or documentation that answer the query`. Index the code itself with `task: document`.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"{{model}}\",\n  \"task\": \"code_query\",\n  \"input\": \"read a file to a string in rust\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "response": [],
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                      "const r = pm.response.json();",
+                      "pm.test(\"1 vector(s) in input order\", () => pm.expect(r.output).to.have.length(1));",
+                      "pm.test(\"vectors have the model's size\", () => {",
+                      "  const dims = Number(pm.collectionVariables.get(\"dims\") || 0);",
+                      "  if (dims) pm.expect(r.output[0]).to.have.length(dims);",
+                      "});",
+                      "pm.test(\"usage carries the token count\", () => pm.expect(r.usage.total.total_tokens).to.be.a(\"number\"));",
+                      "pm.test(\"vectors are unit length\", () => {",
+                      "  for (const v of pm.response.json().output) {",
+                      "    const n = Math.sqrt(v.reduce((a, x) => a + x * x, 0));",
+                      "    pm.expect(Math.abs(n - 1)).to.be.below(1e-3);",
+                      "  }",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "fact_verification",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{host}}/v1/embeddings",
+                  "host": [
+                    "{{host}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                },
+                "description": "`Given a claim, retrieve documents that support or refute the claim`",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"{{model}}\",\n  \"task\": \"fact_verification\",\n  \"input\": \"The Great Wall of China is visible from the Moon with the naked eye.\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "response": [],
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                      "const r = pm.response.json();",
+                      "pm.test(\"1 vector(s) in input order\", () => pm.expect(r.output).to.have.length(1));",
+                      "pm.test(\"vectors have the model's size\", () => {",
+                      "  const dims = Number(pm.collectionVariables.get(\"dims\") || 0);",
+                      "  if (dims) pm.expect(r.output[0]).to.have.length(dims);",
+                      "});",
+                      "pm.test(\"usage carries the token count\", () => pm.expect(r.usage.total.total_tokens).to.be.a(\"number\"));",
+                      "pm.test(\"vectors are unit length\", () => {",
+                      "  for (const v of pm.response.json().output) {",
+                      "    const n = Math.sqrt(v.reduce((a, x) => a + x * x, 0));",
+                      "    pm.expect(Math.abs(n - 1)).to.be.below(1e-3);",
+                      "  }",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "question_answering",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{host}}/v1/embeddings",
+                  "host": [
+                    "{{host}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                },
+                "description": "`Given a question, retrieve passages that answer the question`",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"{{model}}\",\n  \"task\": \"question_answering\",\n  \"input\": \"What year did the Apollo 11 mission land on the Moon?\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "response": [],
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                      "const r = pm.response.json();",
+                      "pm.test(\"1 vector(s) in input order\", () => pm.expect(r.output).to.have.length(1));",
+                      "pm.test(\"vectors have the model's size\", () => {",
+                      "  const dims = Number(pm.collectionVariables.get(\"dims\") || 0);",
+                      "  if (dims) pm.expect(r.output[0]).to.have.length(dims);",
+                      "});",
+                      "pm.test(\"usage carries the token count\", () => pm.expect(r.usage.total.total_tokens).to.be.a(\"number\"));",
+                      "pm.test(\"vectors are unit length\", () => {",
+                      "  for (const v of pm.response.json().output) {",
+                      "    const n = Math.sqrt(v.reduce((a, x) => a + x * x, 0));",
+                      "    pm.expect(Math.abs(n - 1)).to.be.below(1e-3);",
+                      "  }",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "bitext_query",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{host}}/v1/embeddings",
+                  "host": [
+                    "{{host}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                },
+                "description": "`Retrieve parallel sentences` (cross-lingual mining)",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"{{model}}\",\n  \"task\": \"bitext_query\",\n  \"input\": [\n    \"Where is the railway station?\",\n    \"Où est la gare ?\"\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "response": [],
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                      "const r = pm.response.json();",
+                      "pm.test(\"2 vector(s) in input order\", () => pm.expect(r.output).to.have.length(2));",
+                      "pm.test(\"vectors have the model's size\", () => {",
+                      "  const dims = Number(pm.collectionVariables.get(\"dims\") || 0);",
+                      "  if (dims) pm.expect(r.output[0]).to.have.length(dims);",
+                      "});",
+                      "pm.test(\"usage carries the token count\", () => pm.expect(r.usage.total.total_tokens).to.be.a(\"number\"));",
+                      "pm.test(\"vectors are unit length\", () => {",
+                      "  for (const v of pm.response.json().output) {",
+                      "    const n = Math.sqrt(v.reduce((a, x) => a + x * x, 0));",
+                      "    pm.expect(Math.abs(n - 1)).to.be.below(1e-3);",
+                      "  }",
+                      "});",
+                      "const [en, fr] = pm.response.json().output;",
+                      "pm.test(\"translations are close\", () => pm.expect(en.reduce((s, v, i) => s + v * fr[i], 0)).to.be.above(0.7));"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Task aliases — case-insensitive, - and space = _",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{host}}/v1/embeddings",
+                  "host": [
+                    "{{host}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                },
+                "description": "",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"{{model}}\",\n  \"task\": \"Search-Query\",\n  \"input\": \"aliases work too\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "response": [],
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                      "const r = pm.response.json();",
+                      "pm.test(\"1 vector(s) in input order\", () => pm.expect(r.output).to.have.length(1));",
+                      "pm.test(\"vectors have the model's size\", () => {",
+                      "  const dims = Number(pm.collectionVariables.get(\"dims\") || 0);",
+                      "  if (dims) pm.expect(r.output[0]).to.have.length(dims);",
+                      "});",
+                      "pm.test(\"usage carries the token count\", () => pm.expect(r.usage.total.total_tokens).to.be.a(\"number\"));",
+                      "pm.test(\"vectors are unit length\", () => {",
+                      "  for (const v of pm.response.json().output) {",
+                      "    const n = Math.sqrt(v.reduce((a, x) => a + x * x, 0));",
+                      "    pm.expect(Math.abs(n - 1)).to.be.below(1e-3);",
+                      "  }",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Unknown task = custom instruction (verbatim)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{host}}/v1/embeddings",
+                  "host": [
+                    "{{host}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                },
+                "description": "The escape hatch: anything that is not a known task is used verbatim as the instruction.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"{{model}}\",\n  \"task\": \"Given a legal question, retrieve the relevant statute\",\n  \"input\": \"Can a landlord keep the deposit for normal wear and tear?\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "response": [],
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                      "const r = pm.response.json();",
+                      "pm.test(\"1 vector(s) in input order\", () => pm.expect(r.output).to.have.length(1));",
+                      "pm.test(\"vectors have the model's size\", () => {",
+                      "  const dims = Number(pm.collectionVariables.get(\"dims\") || 0);",
+                      "  if (dims) pm.expect(r.output[0]).to.have.length(dims);",
+                      "});",
+                      "pm.test(\"usage carries the token count\", () => pm.expect(r.usage.total.total_tokens).to.be.a(\"number\"));",
+                      "pm.test(\"vectors are unit length\", () => {",
+                      "  for (const v of pm.response.json().output) {",
+                      "    const n = Math.sqrt(v.reduce((a, x) => a + x * x, 0));",
+                      "    pm.expect(Math.abs(n - 1)).to.be.below(1e-3);",
+                      "  }",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Explicit instruction overrides task",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{host}}/v1/embeddings",
+                  "host": [
+                    "{{host}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                },
+                "description": "Harrier extension — `instruction` overrides `task` and is applied to every input.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"{{model}}\",\n  \"task\": \"query\",\n  \"instruction\": \"Given a product review, retrieve reviews that express the same opinion\",\n  \"input\": [\n    \"Battery life is excellent\",\n    \"Lasts all day on one charge\"\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "response": [],
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                      "const r = pm.response.json();",
+                      "pm.test(\"2 vector(s) in input order\", () => pm.expect(r.output).to.have.length(2));",
+                      "pm.test(\"vectors have the model's size\", () => {",
+                      "  const dims = Number(pm.collectionVariables.get(\"dims\") || 0);",
+                      "  if (dims) pm.expect(r.output[0]).to.have.length(dims);",
+                      "});",
+                      "pm.test(\"usage carries the token count\", () => pm.expect(r.usage.total.total_tokens).to.be.a(\"number\"));",
+                      "pm.test(\"vectors are unit length\", () => {",
+                      "  for (const v of pm.response.json().output) {",
+                      "    const n = Math.sqrt(v.reduce((a, x) => a + x * x, 0));",
+                      "    pm.expect(Math.abs(n - 1)).to.be.below(1e-3);",
+                      "  }",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "Other fields",
+          "description": "",
+          "item": [
+            {
+              "name": "normalize: false — raw pooled hidden state",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{host}}/v1/embeddings",
+                  "host": [
+                    "{{host}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                },
+                "description": "",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"{{model}}\",\n  \"input\": \"raw, not L2-normalised\",\n  \"normalize\": false\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "response": [],
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                      "const r = pm.response.json();",
+                      "pm.test(\"1 vector(s) in input order\", () => pm.expect(r.output).to.have.length(1));",
+                      "pm.test(\"vectors have the model's size\", () => {",
+                      "  const dims = Number(pm.collectionVariables.get(\"dims\") || 0);",
+                      "  if (dims) pm.expect(r.output[0]).to.have.length(dims);",
+                      "});",
+                      "pm.test(\"usage carries the token count\", () => pm.expect(r.usage.total.total_tokens).to.be.a(\"number\"));",
+                      "pm.test(\"not unit length\", () => {",
+                      "  const v = pm.response.json().output[0];",
+                      "  pm.expect(Math.abs(Math.sqrt(v.reduce((a, x) => a + x * x, 0)) - 1)).to.be.above(1e-3);",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "dimensions — accepted and ignored",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{host}}/v1/embeddings",
+                  "host": [
+                    "{{host}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                },
+                "description": "Harrier vectors are fixed-size (GAISe's `fixed` rule); the vector-size test confirms the native size.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"{{model}}\",\n  \"input\": \"still comes back at the model's native size\",\n  \"dimensions\": 256\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "response": [],
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                      "const r = pm.response.json();",
+                      "pm.test(\"1 vector(s) in input order\", () => pm.expect(r.output).to.have.length(1));",
+                      "pm.test(\"vectors have the model's size\", () => {",
+                      "  const dims = Number(pm.collectionVariables.get(\"dims\") || 0);",
+                      "  if (dims) pm.expect(r.output[0]).to.have.length(dims);",
+                      "});",
+                      "pm.test(\"usage carries the token count\", () => pm.expect(r.usage.total.total_tokens).to.be.a(\"number\"));",
+                      "pm.test(\"vectors are unit length\", () => {",
+                      "  for (const v of pm.response.json().output) {",
+                      "    const n = Math.sqrt(v.reduce((a, x) => a + x * x, 0));",
+                      "    pm.expect(Math.abs(n - 1)).to.be.below(1e-3);",
+                      "  }",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "correlation_id — passthrough",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{host}}/v1/embeddings",
+                  "host": [
+                    "{{host}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                },
+                "description": "Accepted, not used; a router's tracing key travels through untouched.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"{{model}}\",\n  \"correlation_id\": \"req-7f3a2c\",\n  \"task\": \"query\",\n  \"input\": \"tracing passthrough\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "response": [],
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                      "const r = pm.response.json();",
+                      "pm.test(\"1 vector(s) in input order\", () => pm.expect(r.output).to.have.length(1));",
+                      "pm.test(\"vectors have the model's size\", () => {",
+                      "  const dims = Number(pm.collectionVariables.get(\"dims\") || 0);",
+                      "  if (dims) pm.expect(r.output[0]).to.have.length(dims);",
+                      "});",
+                      "pm.test(\"usage carries the token count\", () => pm.expect(r.usage.total.total_tokens).to.be.a(\"number\"));",
+                      "pm.test(\"vectors are unit length\", () => {",
+                      "  for (const v of pm.response.json().output) {",
+                      "    const n = Math.sqrt(v.reduce((a, x) => a + x * x, 0));",
+                      "    pm.expect(Math.abs(n - 1)).to.be.below(1e-3);",
+                      "  }",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Mixed lengths in one request",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{host}}/v1/embeddings",
+                  "host": [
+                    "{{host}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                },
+                "description": "Batched by length internally; short rows are never padded to the long one. An empty string is a valid input (a lone EOS token).",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"{{model}}\",\n  \"input\": [\n    \"short\",\n    \"\",\n    \"A medium-length sentence that has a few more tokens than the one before it.\",\n    \"Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.\"\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "response": [],
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                      "const r = pm.response.json();",
+                      "pm.test(\"4 vector(s) in input order\", () => pm.expect(r.output).to.have.length(4));",
+                      "pm.test(\"vectors have the model's size\", () => {",
+                      "  const dims = Number(pm.collectionVariables.get(\"dims\") || 0);",
+                      "  if (dims) pm.expect(r.output[0]).to.have.length(dims);",
+                      "});",
+                      "pm.test(\"usage carries the token count\", () => pm.expect(r.usage.total.total_tokens).to.be.a(\"number\"));",
+                      "pm.test(\"vectors are unit length\", () => {",
+                      "  for (const v of pm.response.json().output) {",
+                      "    const n = Math.sqrt(v.reduce((a, x) => a + x * x, 0));",
+                      "    pm.expect(Math.abs(n - 1)).to.be.below(1e-3);",
+                      "  }",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "Errors",
+          "description": "Plain-text bodies, like gaise-api.",
+          "item": [
+            {
+              "name": "400 — empty input",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{host}}/v1/embeddings",
+                  "host": [
+                    "{{host}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                },
+                "description": "",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"{{model}}\",\n  \"input\": []\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "response": [],
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
+                      "pm.test(\"plain-text body\", () => pm.expect(pm.response.text()).to.include(\"input\"));"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "400 — malformed JSON",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{host}}/v1/embeddings",
+                  "host": [
+                    "{{host}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                },
+                "description": "",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{ \"input\": \"missing closing brace\"",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "response": [],
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"status 400\", () => pm.response.to.have.status(400));"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "404 — model that is not loaded",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{host}}/v1/embeddings",
+                  "host": [
+                    "{{host}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                },
+                "description": "The body lists what is loaded.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"harrier::harrier-oss-v1-27b\",\n  \"input\": \"not loaded\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "response": [],
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"status 404\", () => pm.response.to.have.status(404));",
+                      "pm.test(\"body lists the loaded models\", () => pm.expect(pm.response.text()).to.include(\"loaded\"));"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "415 — missing Content-Type",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "url": {
+                  "raw": "{{host}}/v1/embeddings",
+                  "host": [
+                    "{{host}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                },
+                "description": "",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{ \"input\": \"no content type\" }",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "response": [],
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"status 415\", () => pm.response.to.have.status(415));"
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "host",
+      "value": "http://localhost:3000",
+      "type": "string"
+    },
+    {
+      "key": "model",
+      "value": "harrier::harrier-oss-v1-0.6b",
+      "type": "string"
+    },
+    {
+      "key": "dims",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "query_vectors",
+      "value": "",
+      "type": "string"
+    }
+  ]
+}

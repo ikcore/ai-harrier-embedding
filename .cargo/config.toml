@@ -1,0 +1,31 @@
+# Workspace conveniences. Cargo has no `[workspace.features]`, so the GPU
+# back-ends are declared on each crate and forwarded to candle; these aliases
+# just spell the common invocations.
+
+[alias]
+# CPU-only release build (f32 dense weights, or the tiled int8 kernel for
+# GGUF q8_0 — runtime AVX2 dispatch, no special RUSTFLAGS).
+rel = "build --release -p harrier_api"
+# GPU builds. CUDA needs the CUDA toolkit's nvcc *and* a host compiler it
+# supports (see below); Metal is macOS only.
+cuda = "build --release --features cuda -p harrier_api"
+run-cuda = "run --release --features cuda -p harrier_api --"
+metal = "build --release --features metal -p harrier_api"
+run-metal = "run --release --features metal -p harrier_api --"
+
+# Build-time environment for CUDA builds on Windows. Point these at your
+# toolchain here, or (better) in your own ~/.cargo/config.toml so the
+# repository stays machine-independent.
+#
+# [env]
+# nvcc's host compiler, outside a "x64 Native Tools" prompt. It must be a
+# version the installed CUDA toolkit accepts: CUDA 12.x takes MSVC 2017–2022
+# (cl.exe 19.1x–19.4x); MSVC 14.5x / VS 2026 needs CUDA 13.2 or newer.
+# NVCC_CCBIN = 'C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\MSVC\14.51.36231\bin\Hostx64\x64\cl.exe'
+# CUDA 13's CCCL headers need MSVC's conforming preprocessor.
+# NVCC_APPEND_FLAGS = "-Xcompiler /Zc:preprocessor"
+# Pick the toolkit when several are installed.
+# CUDA_PATH = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3'
+# Skip the nvcc device probe and compile kernels for one architecture
+# (RTX 40xx = 89, RTX 30xx = 86, A100 = 80, H100 = 90).
+# CUDA_COMPUTE_CAP = "89"

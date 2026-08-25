@@ -1,0 +1,30 @@
+[package]
+name = "harrier_api"
+description = "Axum HTTP service for Microsoft Harrier embeddings (GAISe-compatible /v1/embeddings)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "harrier_api"
+path = "src/main.rs"
+
+[dependencies]
+harrier_core = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[features]
+default = ["hf-hub"]
+hf-hub = ["harrier_core/hf-hub"]
+cuda = ["harrier_core/cuda"]
+cudnn = ["harrier_core/cudnn"]
+metal = ["harrier_core/metal"]
+accelerate = ["harrier_core/accelerate"]
+mkl = ["harrier_core/mkl"]

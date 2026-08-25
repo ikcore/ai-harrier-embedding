@@ -1,0 +1,57 @@
+# syntax=docker/dockerfile:1
+# CUDA image: glibc binary + only the CUDA libraries candle links
+# (cublas, cublasLt, curand, nvrtc) on a distroless base. libcuda itself comes
+# from the host driver via the NVIDIA container toolkit.
+#
+#   docker build -f docker/Dockerfile.cuda -t harrier-api:cuda .
+#   docker run --rm --gpus all -p 3000:3000 -v ./models:/models harrier-api:cuda
+#
+# `--gpus all` (or `gpus: all` in compose) is required: libcuda.so.1 is the
+# host driver, mounted in by the NVIDIA container runtime only when a GPU is
+# attached. Without it the binary cannot even start:
+#   /harrier_api: error while loading shared libraries: libcuda.so.1: cannot open shared object file
+# Docker Desktop's "Run" button does not attach GPUs — use the command line or compose.
+#
+# Build args:
+#   CUDA_VERSION      toolkit used to build (default 12.6.3; host driver must support it)
+#   CUDA_COMPUTE_CAP  target GPU (80 = A100, 86 = RTX 30xx, 89 = RTX 40xx, 90 = H100)
+
+ARG CUDA_VERSION=12.6.3
+FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu22.04 AS build
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates build-essential \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+ENV PATH=/root/.cargo/bin:$PATH
+ARG CUDA_COMPUTE_CAP=89
+ENV CUDA_COMPUTE_CAP=${CUDA_COMPUTE_CAP}
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo build --release --features cuda -p harrier_api \
+    && cp target/release/harrier_api /harrier_api
+# Collect exactly the CUDA shared objects the binary needs (+ nvrtc's builtins,
+# which nvrtc dlopens at run time).
+RUN mkdir -p /cuda-libs \
+    && ldd /harrier_api | grep -oE '/usr/local/cuda[^ ]+' | xargs -I{} cp -L {} /cuda-libs/ \
+    && cp -L /usr/local/cuda/lib64/libnvrtc-builtins.so.* /cuda-libs/ \
+    && ls -la /cuda-libs
+
+FROM gcr.io/distroless/cc-debian12 AS base
+COPY --from=build /cuda-libs/ /usr/local/cuda/lib64/
+COPY --from=build /harrier_api /harrier_api
+ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64 \
+    NVIDIA_VISIBLE_DEVICES=all NVIDIA_DRIVER_CAPABILITIES=compute,utility \
+    HARRIER_MODEL_DIR=/models HARRIER_MODELS=harrier-oss-v1-0.6b HARRIER_DEVICE=cuda \
+    HARRIER_HOST=0.0.0.0 HARRIER_PORT=3000 HF_HOME=/models/.hf-cache
+VOLUME ["/models"]
+EXPOSE 3000
+ENTRYPOINT ["/harrier_api"]
+
+# Opt-in: models baked into the image (`--target bake`).
+FROM base AS bake
+COPY models/ /models/
+
+# Default (last stage): binary only, models from the /models volume.
+FROM base AS runtime

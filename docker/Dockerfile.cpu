@@ -1,0 +1,35 @@
+# syntax=docker/dockerfile:1
+# CPU image: fully static musl binary on `scratch`.
+#
+#   docker build -f docker/Dockerfile.cpu -t harrier-api:cpu .
+#   docker run --rm -p 3000:3000 -v ./models:/models harrier-api:cpu
+#
+# Bake the models in (no volume, no network):
+#   harrier_api download 270m 0.6b   # or: docker run ... harrier-api:cpu download 270m
+#   docker build -f docker/Dockerfile.cpu --target bake -t harrier-api:cpu-models .
+
+FROM rust:1-alpine AS build
+RUN apk add --no-cache build-base
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+ENV RUSTFLAGS="-C target-feature=+crt-static"
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo build --release -p harrier_api --target x86_64-unknown-linux-musl \
+    && cp target/x86_64-unknown-linux-musl/release/harrier_api /harrier_api
+
+FROM scratch AS base
+COPY --from=build /harrier_api /harrier_api
+ENV HARRIER_MODEL_DIR=/models HARRIER_MODELS=harrier-oss-v1-0.6b HARRIER_DEVICE=cpu \
+    HARRIER_HOST=0.0.0.0 HARRIER_PORT=3000 HF_HOME=/models/.hf-cache
+VOLUME ["/models"]
+EXPOSE 3000
+ENTRYPOINT ["/harrier_api"]
+
+# Opt-in: models baked into the image (`--target bake`).
+FROM base AS bake
+COPY models/ /models/
+
+# Default (last stage): binary only, models from the /models volume.
+FROM base AS runtime

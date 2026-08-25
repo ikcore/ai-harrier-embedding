@@ -1,0 +1,49 @@
+# GET /v1/models — GAISe-shaped model records.
+#
+# Works with the VS Code REST Client extension and the JetBrains HTTP Client.
+# Start a server first, e.g.  HARRIER_MODELS=270m,0.6b target/release/harrier_api
+#
+# Each record: id, provider ("harrier"), display_name, status, capabilities, limits,
+# plus an `embedding` profile (dimension_rule: fixed, task_control, resolved task_instructions)
+# and `runtime` facts (architecture, source, device, dtype, load_seconds, default).
+
+@host = http://localhost:3000
+
+### All loaded models
+# @name models
+GET {{host}}/v1/models
+
+### Filter by operation — `embeddings` (also `embedding`, `embed`) returns everything
+GET {{host}}/v1/models?operation=embeddings
+
+### Other GAISe operations are valid but this service offers none → empty list
+GET {{host}}/v1/models?operation=instruct
+
+### Filter by provider — `harrier` returns everything
+GET {{host}}/v1/models?provider=harrier
+
+### Any other provider → empty list
+GET {{host}}/v1/models?provider=openai
+
+### Both filters together, as a GAISe router would send them
+GET {{host}}/v1/models?operation=embeddings&provider=harrier
+
+### One model by GAISe-qualified id
+# @name model
+GET {{host}}/v1/models/harrier::harrier-oss-v1-0.6b
+
+### One model by bare id
+GET {{host}}/v1/models/harrier-oss-v1-270m
+
+### One model by alias
+GET {{host}}/v1/models/270m
+
+###############################################################################
+# Errors — plain-text bodies
+###############################################################################
+
+### 400 — unknown operation
+GET {{host}}/v1/models?operation=bogus
+
+### 404 — model that is not loaded
+GET {{host}}/v1/models/harrier::harrier-oss-v1-27b
