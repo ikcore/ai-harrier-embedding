@@ -96,9 +96,31 @@ pub fn attention_mask(
 ) -> Result<Tensor> {
     let k_len = layout.seq_len;
     let b = layout.batch_size();
+    let allowed = allowed_keys(layout, q_start, q_len, 0, k_len, window, causal, device)?;
+    let zeros = Tensor::zeros((b, 1, q_len, k_len), DType::F32, device)?;
+    let neg = Tensor::full(f32::MIN, (b, 1, q_len, k_len), device)?;
+    allowed.where_cond(&zeros, &neg)
+}
+
+/// The rule of [`attention_mask`] as a `u8` tensor `[b, 1, q_len, k_len]`
+/// (1 = may attend) over query rows `q_start..q_start + q_len` and key
+/// columns `k_start..k_start + k_len`.
+#[allow(clippy::too_many_arguments)]
+fn allowed_keys(
+    layout: &BatchLayout,
+    q_start: usize,
+    q_len: usize,
+    k_start: usize,
+    k_len: usize,
+    window: Option<usize>,
+    causal: bool,
+    device: &Device,
+) -> Result<Tensor> {
+    let b = layout.batch_size();
+    let k_end = k_start + k_len;
     let q_pos =
         Tensor::arange(q_start as u32, (q_start + q_len) as u32, device)?.reshape((q_len, 1))?;
-    let k_pos = Tensor::arange(0u32, k_len as u32, device)?.reshape((1, k_len))?;
+    let k_pos = Tensor::arange(k_start as u32, k_end as u32, device)?.reshape((1, k_len))?;
     let mut allowed = if causal {
         k_pos.broadcast_le(&q_pos)? // [q, k] u8
     } else {
@@ -106,7 +128,8 @@ pub fn attention_mask(
     };
     if let Some(w) = window {
         // k + w > q  <=>  q - k < w
-        let k_plus_w = Tensor::arange(w as u32, (w + k_len) as u32, device)?.reshape((1, k_len))?;
+        let k_plus_w = Tensor::arange((k_start + w) as u32, (k_end + w) as u32, device)?
+            .reshape((1, k_len))?;
         allowed = allowed.mul(&k_plus_w.broadcast_gt(&q_pos)?)?;
         if !causal {
             // q + w > k  <=>  k - q < w
@@ -119,12 +142,29 @@ pub fn attention_mask(
     let lengths: Vec<u32> = layout.lengths.iter().map(|&l| l as u32).collect();
     let lengths = Tensor::from_vec(lengths, (b, 1, 1, 1), device)?;
     let key_valid = k_pos.reshape((1, 1, 1, k_len))?.broadcast_lt(&lengths)?; // [b,1,1,k]
-    let allowed = allowed
+    allowed
         .reshape((1, 1, q_len, k_len))?
-        .broadcast_mul(&key_valid)?;
-    let zeros = Tensor::zeros((b, 1, q_len, k_len), DType::F32, device)?;
-    let neg = Tensor::full(f32::MIN, (b, 1, q_len, k_len), device)?;
-    allowed.where_cond(&zeros, &neg)
+        .broadcast_mul(&key_valid)
+}
+
+/// Key columns a block of query rows `q_start..q_end` can see at all: the
+/// causal rule hides keys after the block, a window hides keys further than
+/// `w - 1` from it. Everything outside is masked for every row, so the block
+/// never multiplies it.
+fn key_range(
+    q_start: usize,
+    q_end: usize,
+    seq_len: usize,
+    window: Option<usize>,
+    causal: bool,
+) -> (usize, usize) {
+    let start = window.map_or(0, |w| (q_start + 1).saturating_sub(w));
+    let end = match (causal, window) {
+        (true, _) => q_end,
+        (false, Some(w)) => (q_end - 1 + w).min(seq_len),
+        (false, None) => seq_len,
+    };
+    (start, end)
 }
 
 /// Expand `[b, kv_heads, s, d]` to `[b, kv_heads * n_rep, s, d]` for GQA.
@@ -196,22 +236,28 @@ pub(crate) fn attention_chunked(
     let dtype = q.dtype();
     let device = q.device();
 
-    let k = repeat_kv(k.clone(), n_rep)?;
+    let k = repeat_kv(k.clone(), n_rep)?.contiguous()?;
     let v = repeat_kv(v.clone(), n_rep)?.contiguous()?;
-    let k_t = k.transpose(2, 3)?.contiguous()?; // [b, heads, d, s]
 
     let chunk = chunk.clamp(1, s.max(1));
     let mut outputs = Vec::with_capacity(s.div_ceil(chunk));
     let mut start = 0;
     while start < s {
         let len = chunk.min(s - start);
+        let (k0, k1) = key_range(start, start + len, s, window, causal);
         let q_chunk = q.narrow(2, start, len)?.contiguous()?;
-        let scores = q_chunk.matmul(&k_t)?; // [b, heads, len, s]
+        let k_t = k.narrow(2, k0, k1 - k0)?.t()?; // [b, heads, d, keys]
+        let scores = q_chunk.matmul(&k_t)?; // [b, heads, len, keys]
         let scores = scores.to_dtype(DType::F32)?.affine(scale, 0.0)?;
-        let mask = attention_mask(layout, start, len, window, causal, device)?;
-        let scores = scores.broadcast_add(&mask)?;
+        let allowed = allowed_keys(layout, start, len, k0, k1 - k0, window, causal, device)?;
+        // A small [b, 1, len, keys] additive mask broadcast over heads is
+        // cheaper than a where_cond over the full broadcast score shape.
+        let mask_shape = allowed.shape().clone();
+        let zeros = Tensor::zeros(&mask_shape, DType::F32, device)?;
+        let neg = Tensor::full(f32::MIN, &mask_shape, device)?;
+        let scores = scores.broadcast_add(&allowed.where_cond(&zeros, &neg)?)?;
         let probs = candle_nn::ops::softmax_last_dim(&scores)?.to_dtype(dtype)?;
-        outputs.push(probs.matmul(&v)?); // [b, heads, len, d]
+        outputs.push(probs.matmul(&v.narrow(2, k0, k1 - k0)?)?); // [b, heads, len, d]
         start += len;
     }
     let out = if outputs.len() == 1 {
@@ -430,6 +476,135 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// Attention against every key with the full additive mask: what
+    /// `attention_chunked` computed before it skipped hidden key columns.
+    fn all_keys_reference(
+        q: &Tensor,
+        k: &Tensor,
+        v: &Tensor,
+        layout: &BatchLayout,
+        window: Option<usize>,
+        scale: f64,
+        causal: bool,
+    ) -> Tensor {
+        let (b, heads, s, d) = q.dims4().unwrap();
+        let n_rep = heads / k.dim(1).unwrap();
+        let k = repeat_kv(k.clone(), n_rep).unwrap();
+        let v = repeat_kv(v.clone(), n_rep).unwrap().contiguous().unwrap();
+        let k_t = k.transpose(2, 3).unwrap().contiguous().unwrap();
+        let scores = q
+            .contiguous()
+            .unwrap()
+            .matmul(&k_t)
+            .unwrap()
+            .affine(scale, 0.0)
+            .unwrap();
+        let mask = attention_mask(layout, 0, s, window, causal, q.device()).unwrap();
+        let probs =
+            candle_nn::ops::softmax_last_dim(&scores.broadcast_add(&mask).unwrap()).unwrap();
+        probs
+            .matmul(&v)
+            .unwrap()
+            .transpose(1, 2)
+            .unwrap()
+            .reshape((b, s, heads * d))
+            .unwrap()
+    }
+
+    #[test]
+    fn key_ranges_match_all_keys() {
+        let dev = Device::Cpu;
+        let (b, h, s, d) = (2, 4, 53, 8);
+        let q = Tensor::randn(0f32, 1.0, (b, h, s, d), &dev).unwrap();
+        let k = Tensor::randn(0f32, 1.0, (b, 2, s, d), &dev).unwrap();
+        let v = Tensor::randn(0f32, 1.0, (b, 2, s, d), &dev).unwrap();
+        let layout = BatchLayout {
+            lengths: vec![53, 30],
+            seq_len: s,
+        };
+        for causal in [true, false] {
+            for window in [None, Some(1), Some(9), Some(100)] {
+                let want = all_keys_reference(&q, &k, &v, &layout, window, 0.5, causal);
+                for chunk in [s, 16, 7, 1] {
+                    let got =
+                        attention_chunked(&q, &k, &v, &layout, window, 0.5, causal, chunk).unwrap();
+                    // Only real (unpadded) query rows carry meaning; padded
+                    // rows are fully masked either way.
+                    for (bi, &len) in layout.lengths.iter().enumerate() {
+                        let diff = (got.get(bi).unwrap().narrow(0, 0, len).unwrap()
+                            - want.get(bi).unwrap().narrow(0, 0, len).unwrap())
+                        .unwrap()
+                        .abs()
+                        .unwrap()
+                        .flatten_all()
+                        .unwrap()
+                        .max(0)
+                        .unwrap()
+                        .to_scalar::<f32>()
+                        .unwrap();
+                        assert!(
+                            diff < 1e-5,
+                            "causal {causal} window {window:?} chunk {chunk} row {bi}: {diff}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Old (every key, additive mask) vs new attention per call.
+    /// `cargo test --release -p harrier_core --features cuda --lib bench_attention_cuda -- --ignored --nocapture`
+    #[cfg(feature = "cuda")]
+    #[test]
+    #[ignore = "benchmark"]
+    fn bench_attention_cuda() {
+        use std::time::Instant;
+        let dev = Device::new_cuda(0).unwrap();
+        // Harrier 0.6B (Qwen3): 16 query heads, 8 KV heads, head_dim 128.
+        let (h, kvh, d) = (16, 8, 128);
+        let time = |f: &dyn Fn() -> Tensor| {
+            let _ = f();
+            dev.synchronize().unwrap();
+            let t = Instant::now();
+            for _ in 0..5 {
+                let _ = f();
+            }
+            dev.synchronize().unwrap();
+            t.elapsed() / 5
+        };
+        for s in [256usize, 1024, 4096, 8192, 16384] {
+            let q = Tensor::randn(0f32, 1.0, (1, h, s, d), &dev).unwrap();
+            let k = Tensor::randn(0f32, 1.0, (1, kvh, s, d), &dev).unwrap();
+            let v = Tensor::randn(0f32, 1.0, (1, kvh, s, d), &dev).unwrap();
+            let layout = BatchLayout {
+                lengths: vec![s],
+                seq_len: s,
+            };
+            let chunk = query_chunk(1, h, s);
+            let old = time(&|| {
+                // The previous kernel: chunked queries against every key.
+                let k = repeat_kv(k.clone(), h / kvh).unwrap();
+                let v = repeat_kv(v.clone(), h / kvh).unwrap().contiguous().unwrap();
+                let k_t = k.transpose(2, 3).unwrap().contiguous().unwrap();
+                let mut outs = Vec::new();
+                let mut start = 0;
+                while start < s {
+                    let len = chunk.min(s - start);
+                    let qc = q.narrow(2, start, len).unwrap().contiguous().unwrap();
+                    let sc = qc.matmul(&k_t).unwrap().affine(0.088, 0.0).unwrap();
+                    let m = attention_mask(&layout, start, len, None, true, &dev).unwrap();
+                    let p =
+                        candle_nn::ops::softmax_last_dim(&sc.broadcast_add(&m).unwrap()).unwrap();
+                    outs.push(p.matmul(&v).unwrap());
+                    start += len;
+                }
+                Tensor::cat(&outs, 2).unwrap()
+            });
+            let new = time(&|| attention(&q, &k, &v, &layout, None, 0.088, true).unwrap());
+            println!("len {s:>5}: old {old:>12?}  new {new:?}");
         }
     }
 
